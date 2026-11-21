@@ -303,9 +303,6 @@ def poll_loop():
 
 
 if __name__ == "__main__":
-    if os.environ.get("WIPE_SUBSCRIBERS", "") == "1":
-        save_subscribers([])
-        print("WIPE_SUBSCRIBERS=1: subscribers cleared.")
     print(f"Turkey alert signup running on http://localhost:{PORT}")
     if os.environ.get("DISABLE_POLLER", "") != "1":
         threading.Thread(target=poll_loop, daemon=True).start()
