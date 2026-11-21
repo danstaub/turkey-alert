@@ -68,6 +68,66 @@ def save_subscribers(subs):
         json.dump(subs, f, indent=2)
 
 
+def load_dotenv():
+    path = os.path.join(BASE, ".env")
+    if not os.path.exists(path):
+        return
+    for line in open(path):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def send_welcome_email(email, town_name):
+    """Welcome email on signup, via Resend. Returns True if sent.
+
+    Never blocks signup: if keys are missing or Resend fails, log it
+    and let the signup page still confirm. The sender is FROM_EMAIL
+    (dan@danstaub.com), so this also tells the subscriber which address
+    future turkey alerts will come from.
+    """
+    load_dotenv()
+    api_key = os.environ.get("RESEND_API_KEY")
+    from_email = os.environ.get("FROM_EMAIL")
+    app_url = os.environ.get("APP_URL", "https://alerts.danstaub.com")
+    if not api_key or not from_email:
+        print("Welcome email skipped: RESEND_API_KEY or FROM_EMAIL not set.", file=sys.stderr)
+        return False
+    unsub = f"{app_url.rstrip('/')}/unsubscribe?email={urllib.parse.quote(email)}"
+    payload = {
+        "from": from_email,
+        "to": [email],
+        "subject": f"You're in, Turkey Alert is on for {town_name}",
+        "text": (
+            f"You're all set for Turkey Alert.\n\n"
+            f"You will get an email from {from_email} whenever a Wild Turkey "
+            f"is reported on eBird within 25 miles of {town_name}.\n\n"
+            f"Turkeys are rare in most towns, so expect silence most weeks, "
+            f"not spam. One email per sighting.\n\n"
+            f"Stop these alerts: {unsub}\n"
+        ),
+    }
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.load(resp)
+        print(f"Welcome email sent to {email} ({town_name}). Resend id: {result.get('id')}", file=sys.stderr)
+        return True
+    except urllib.error.HTTPError as e:
+        print(f"Welcome email to {email} failed: HTTP {e.code} {e.reason}: {e.read().decode()[:300]}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"Welcome email to {email} failed: {e}", file=sys.stderr)
+        return False
+
+
 def geocode_town(query):
     """Free geocode via Nominatim. Returns (display_name, lat, lng) or None."""
     url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
@@ -186,7 +246,14 @@ class Handler(BaseHTTPRequestHandler):
                 "subscribed_at": datetime.now(timezone.utc).isoformat(),
             })
             save_subscribers(subs)
-            msg = f"<p><strong>You're in, {email}.</strong> You will get an email the next time a Wild Turkey is reported near {town_name}.</p>"
+            from_email = os.environ.get("FROM_EMAIL", "dan@danstaub.com")
+            welcome_sent = send_welcome_email(email, town_name)
+            if welcome_sent:
+                msg = (f"<p><strong>You're in, {email}.</strong> You will get an email the next time a Wild Turkey "
+                       f"is reported near {town_name}. A welcome email is on its way from {from_email}, "
+                       f"future alerts will come from that same address.</p>")
+            else:
+                msg = f"<p><strong>You're in, {email}.</strong> You will get an email the next time a Wild Turkey is reported near {town_name}.</p>"
         return self._send(page(msg, selected=town_name if town_name in TOWNS else DEFAULT_TOWN))
 
     def log_message(self, *args):
