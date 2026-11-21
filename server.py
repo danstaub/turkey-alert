@@ -22,6 +22,9 @@ Run:  python3 server.py            (http://localhost:8000)
 import json
 import os
 import re
+import sys
+import threading
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -190,6 +193,44 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def poll_loop():
+    """Run the eBird poller in-process every 30 minutes.
+
+    This runs in the same container as the signup page, so it shares
+    subscribers.json and seen.json with it. A separate Railway cron
+    service would NOT see those files: Railway gives each service its
+    own ephemeral filesystem, and volumes cannot be shared between
+    services, so a separate cron would find zero subscribers every run
+    and re-email the same sightings. Do not split this out again.
+    """
+    try:
+        import turkey_alert
+    except ImportError as e:
+        print(f"Poller disabled: cannot import turkey_alert: {e}", file=sys.stderr)
+        return
+    interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "1800"))
+    state_file = os.environ.get("STATE_FILE", os.path.join(BASE, "seen.json"))
+    first = not os.path.exists(state_file)
+    while True:
+        argv = ["turkey_alert.py", "--seed"] if first else ["turkey_alert.py"]
+        first = False
+        saved_argv = sys.argv
+        sys.argv = argv
+        try:
+            turkey_alert.main()
+        except SystemExit as e:
+            # Missing keys, eBird 403, etc: log and retry next interval,
+            # do not kill the web server.
+            print(f"Poller run exited ({e.code}), will retry in {interval}s.", file=sys.stderr)
+        except Exception as e:
+            print(f"Poller run failed: {e}, will retry in {interval}s.", file=sys.stderr)
+        finally:
+            sys.argv = saved_argv
+        time.sleep(interval)
+
+
 if __name__ == "__main__":
     print(f"Turkey alert signup running on http://localhost:{PORT}")
+    if os.environ.get("DISABLE_POLLER", "") != "1":
+        threading.Thread(target=poll_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

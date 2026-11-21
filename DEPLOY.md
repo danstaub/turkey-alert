@@ -28,6 +28,19 @@ git push -u origin main
 3. Settings > Networking > Add custom domain > `alerts.danstaub.com`, then add the CNAME Railway gives you at your DNS host
 4. Add a Cron service in the same project: `python3 turkey_alert.py`, schedule `*/30 * * * *`, same env vars
 
+**Do NOT do step 4 as a separate service.** Railway gives each service its
+own ephemeral filesystem and volumes cannot be shared between services,
+so a separate cron service would find zero subscribers every run and
+re-email the same sightings. The poller now runs inside `server.py`
+itself, every 30 minutes, in the same container as the signup page.
+Instead, add persistence to the web service:
+- In Railway, click the turkey-alert service, three-dot menu > Add Volume,
+  mount path `/data`, size 1 GB.
+- Add two variables to that same service:
+  `SUBSCRIBERS_FILE=/data/subscribers.json`
+  `STATE_FILE=/data/seen.json`
+  Without the volume, a redeploy wipes the subscriber list.
+
 ### Fly.io
 1. `fly launch` (uses the Dockerfile), `fly secrets set EBIRD_API_KEY=... RESEND_API_KEY=... FROM_EMAIL=... APP_URL=...`
 2. `fly certs add alerts.danstaub.com`, add the DNS records Fly gives you
